@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import google.generativeai as genai
 import twstock
-import requests # 我們改用 requests 直接呼叫 API
+import requests  # 改用 requests 直接呼叫 API，不依賴 FinMind 套件
 
 # 1. 頁面設定
 st.set_page_config(page_title="台股籌碼戰情室", layout="wide")
@@ -30,7 +30,7 @@ ticker_input = st.sidebar.text_input("輸入股票代號 (例如 2330)", value="
 start_date = st.sidebar.date_input("開始日期", datetime.now() - timedelta(days=180))
 end_date = st.sidebar.date_input("結束日期", datetime.now())
 st.sidebar.markdown("---")
-st.sidebar.info("資料來源：Yahoo Finance / FinMind API")
+st.sidebar.info("資料來源：Yahoo Finance / FinMind (證交所 Open Data)")
 
 # 4. 函數區
 
@@ -66,7 +66,7 @@ def load_price_data(ticker, start, end):
             continue
     return None, None, clean_ticker
 
-# 抓取籌碼 (改用 requests 直連 FinMind API，不依賴套件)
+# 抓取籌碼 (改用 requests 直連 FinMind API，繞過套件錯誤)
 def load_chip_data(stock_id, start, end):
     try:
         # FinMind API 網址
@@ -96,7 +96,7 @@ def load_chip_data(stock_id, start, end):
             }
             df['name'] = df['name'].map(name_map).fillna(df['name'])
             df['date'] = pd.to_datetime(df['date'])
-            # 轉成張數
+            # 轉成張數 (除以 1000)
             df['net_buy'] = (df['buy'] - df['sell']) / 1000
             
             return df
@@ -111,7 +111,7 @@ def get_ai_analysis(ticker_code, stock_name, chip_df=None):
         return "AI 功能未啟用。"
     
     chip_summary = ""
-    if chip_df is not None:
+    if chip_df is not None and not chip_df.empty:
         last_date = chip_df['date'].max()
         recent = chip_df[chip_df['date'] == last_date]
         total_buy = recent['net_buy'].sum()
@@ -142,8 +142,9 @@ if ticker_input:
         display_name = f"{clean_code} {stock_name}"
         st.header(f"📊 {display_name} 戰情室")
 
-        tab1, tab2, tab3 = st.tabs(["📈 技術分析", "🏛️ 三大法人籌碼追蹤", "🔎 券商分點/主力"])
+        tab1, tab2, tab3 = st.tabs(["📈 技術分析", "🏛️ 三大法人籌碼", "🔎 券商分點/主力"])
 
+        # === Tab 1: 技術 ===
         with tab1:
             if st.button(f"🤖 AI 分析 {stock_name}"):
                 with st.spinner("AI 正在分析..."):
@@ -165,13 +166,16 @@ if ticker_input:
             fig.update_layout(xaxis_rangeslider_visible=False, height=600, template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
 
+        # === Tab 2: 籌碼 (修復版) ===
         with tab2:
             st.subheader("三大法人累計買賣超趨勢")
             if chip_df is not None and not chip_df.empty:
+                # 樞紐分析 + 累計
                 pivot_df = chip_df.pivot_table(index='date', columns='name', values='net_buy', aggfunc='sum').fillna(0)
                 cum_pivot = pivot_df.cumsum()
                 
                 fig_chip = go.Figure()
+                # 顏色對應：外資紅、投信黃、自營商綠
                 if '外資' in cum_pivot.columns:
                     fig_chip.add_trace(go.Scatter(x=cum_pivot.index, y=cum_pivot['外資'], mode='lines', name='外資', line=dict(color='#FF4136')))
                 if '投信' in cum_pivot.columns:
@@ -182,13 +186,14 @@ if ticker_input:
                     cum_pivot['自營商合計'] = cum_pivot[dealers].sum(axis=1)
                     fig_chip.add_trace(go.Scatter(x=cum_pivot.index, y=cum_pivot['自營商合計'], mode='lines', name='自營商', line=dict(color='#2ECC40')))
 
-                fig_chip.update_layout(title=f"{stock_name} 累計買賣超 (張)", template="plotly_dark", hovermode="x unified")
+                fig_chip.update_layout(title=f"{stock_name} 三大法人累計買賣超 (張)", template="plotly_dark", hovermode="x unified")
                 st.plotly_chart(fig_chip, use_container_width=True)
             else:
-                st.warning("暫無籌碼資料 (請確認 FinMind API 狀態)")
+                st.warning("暫無籌碼資料 (請確認代號或 API 狀態)")
 
+        # === Tab 3: 券商分點 ===
         with tab3:
-            st.info("ℹ️ 說明：分點進出為大量數據，建議使用以下專業網站查詢。")
+            st.info("ℹ️ 說明：該開源專案並未公開「富邦 e-Broker」的爬蟲程式碼。建議使用以下連結查詢分點。")
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown(f"#### 🔗 [Yahoo 股市 - 主力進出](https://tw.stock.yahoo.com/quote/{clean_code}/broker-trading)")
