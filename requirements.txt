@@ -2,3 +2,7 @@ streamlit
 yfinance
 plotly
 pandas
+google-generativeai
+twstock
+requests
+FinMind
