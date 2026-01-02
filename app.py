@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import google.generativeai as genai
 import twstock
-from FinMind.data import DataLoader
+import requests # 我們改用 requests 直接呼叫 API
 
 # 1. 頁面設定
 st.set_page_config(page_title="台股籌碼戰情室", layout="wide")
@@ -30,7 +30,7 @@ ticker_input = st.sidebar.text_input("輸入股票代號 (例如 2330)", value="
 start_date = st.sidebar.date_input("開始日期", datetime.now() - timedelta(days=180))
 end_date = st.sidebar.date_input("結束日期", datetime.now())
 st.sidebar.markdown("---")
-st.sidebar.info("資料來源：Yahoo Finance / FinMind (證交所 Open Data)")
+st.sidebar.info("資料來源：Yahoo Finance / FinMind API")
 
 # 4. 函數區
 
@@ -66,27 +66,27 @@ def load_price_data(ticker, start, end):
             continue
     return None, None, clean_ticker
 
-# 抓取籌碼 (FinMind 通用修復版)
+# 抓取籌碼 (改用 requests 直連 FinMind API，不依賴套件)
 def load_chip_data(stock_id, start, end):
     try:
-        # FinMind 需要字串格式的日期 YYYY-MM-DD
-        start_str = start.strftime("%Y-%m-%d")
-        end_str = end.strftime("%Y-%m-%d")
+        # FinMind API 網址
+        url = "https://api.finmindtrade.com/api/v4/data"
+        parameter = {
+            "dataset": "TaiwanStockInstitutionalInvestor",
+            "data_id": stock_id,
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": end.strftime("%Y-%m-%d")
+        }
         
-        dl = DataLoader()
-        # --- 修改重點：改用 get_data 通用函數，避免版本錯誤 ---
-        df = dl.get_data(
-            dataset="TaiwanStockInstitutionalInvestor",
-            data_id=stock_id,
-            start_date=start_str,
-            end_date=end_str
-        )
+        # 發送請求
+        r = requests.get(url, params=parameter)
+        data = r.json() # 解析 JSON
         
-        if df is not None and not df.empty:
-            # 資料整理：將長表格轉為寬表格 (Pivoting)
-            # 原始資料 name 欄位包含：Foreign_Investor(外資), Investment_Trust(投信), Dealer_Self(自營商)...
+        # 檢查是否成功
+        if data.get("msg") == "success" and data.get("data"):
+            df = pd.DataFrame(data["data"])
             
-            # 簡化名稱對應
+            # 資料整理
             name_map = {
                 'Foreign_Investor': '外資',
                 'Investment_Trust': '投信',
@@ -95,24 +95,21 @@ def load_chip_data(stock_id, start, end):
                 'Dealer': '自營商'
             }
             df['name'] = df['name'].map(name_map).fillna(df['name'])
-            
-            # 轉換日期格式
             df['date'] = pd.to_datetime(df['date'])
-            
-            # 取出買賣超股數 (buy - sell) -> 轉成「張數」 (除以 1000)
+            # 轉成張數
             df['net_buy'] = (df['buy'] - df['sell']) / 1000
             
             return df
-        return None
+        else:
+            return None
     except Exception as e:
-        st.error(f"籌碼資料抓取失敗: {e}")
+        st.error(f"籌碼資料抓取失敗 (API連線錯誤): {e}")
         return None
-        
+
 def get_ai_analysis(ticker_code, stock_name, chip_df=None):
     if not ai_available:
         return "AI 功能未啟用。"
     
-    # 計算最近籌碼概況給 AI
     chip_summary = ""
     if chip_df is not None:
         last_date = chip_df['date'].max()
@@ -137,10 +134,7 @@ def get_ai_analysis(ticker_code, stock_name, chip_df=None):
 
 # 5. 主程式邏輯
 if ticker_input:
-    # A. 抓股價
     price_df, valid_ticker, clean_code = load_price_data(ticker_input, start_date, end_date)
-    
-    # B. 抓籌碼
     chip_df = load_chip_data(clean_code, start_date, end_date)
 
     if price_df is not None and not price_df.empty:
@@ -148,18 +142,16 @@ if ticker_input:
         display_name = f"{clean_code} {stock_name}"
         st.header(f"📊 {display_name} 戰情室")
 
-        # 分頁設定
         tab1, tab2, tab3 = st.tabs(["📈 技術分析", "🏛️ 三大法人籌碼追蹤", "🔎 券商分點/主力"])
 
-        # === TAB 1: 技術走勢 ===
         with tab1:
-            if st.button(f"🤖 AI 分析 {stock_name} (含籌碼解讀)"):
-                with st.spinner("AI 正在分析技術與籌碼數據..."):
+            if st.button(f"🤖 AI 分析 {stock_name}"):
+                with st.spinner("AI 正在分析..."):
                     analysis = get_ai_analysis(clean_code, stock_name, chip_df)
                     st.markdown(analysis)
                     st.markdown("---")
 
-            # 畫 K 線圖
+            # K線圖
             price_df['MA5'] = price_df['Close'].rolling(5).mean()
             price_df['MA20'] = price_df['Close'].rolling(20).mean()
             
@@ -173,74 +165,35 @@ if ticker_input:
             fig.update_layout(xaxis_rangeslider_visible=False, height=600, template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
 
-        # === TAB 2: 三大法人籌碼追蹤 (還原網站功能) ===
         with tab2:
             st.subheader("三大法人累計買賣超趨勢")
-            if chip_df is not None:
-                # 整理數據：樞紐分析表 (Pivot)
+            if chip_df is not None and not chip_df.empty:
                 pivot_df = chip_df.pivot_table(index='date', columns='name', values='net_buy', aggfunc='sum').fillna(0)
-                
-                # 計算「累計」買賣超 (Cumulative Sum) -> 這才是畫趨勢圖的關鍵
                 cum_pivot = pivot_df.cumsum()
                 
-                # 畫圖
                 fig_chip = go.Figure()
-                
-                # 外資 (紅色)
                 if '外資' in cum_pivot.columns:
                     fig_chip.add_trace(go.Scatter(x=cum_pivot.index, y=cum_pivot['外資'], mode='lines', name='外資', line=dict(color='#FF4136')))
-                
-                # 投信 (黃色/橘色)
                 if '投信' in cum_pivot.columns:
                     fig_chip.add_trace(go.Scatter(x=cum_pivot.index, y=cum_pivot['投信'], mode='lines', name='投信', line=dict(color='#FFDC00')))
-                    
-                # 自營商 (合併所有自營商欄位)
+                
                 dealers = [c for c in cum_pivot.columns if '自營商' in c]
                 if dealers:
                     cum_pivot['自營商合計'] = cum_pivot[dealers].sum(axis=1)
                     fig_chip.add_trace(go.Scatter(x=cum_pivot.index, y=cum_pivot['自營商合計'], mode='lines', name='自營商', line=dict(color='#2ECC40')))
 
-                fig_chip.update_layout(
-                    title=f"{stock_name} 三大法人累計買賣超 (張)",
-                    xaxis_title="日期",
-                    yaxis_title="累計張數",
-                    template="plotly_dark",
-                    hovermode="x unified"
-                )
+                fig_chip.update_layout(title=f"{stock_name} 累計買賣超 (張)", template="plotly_dark", hovermode="x unified")
                 st.plotly_chart(fig_chip, use_container_width=True)
-                
-                # 顯示原始數據表格
-                with st.expander("查看每日買賣超詳細數據"):
-                    st.dataframe(pivot_df.sort_index(ascending=False))
             else:
-                st.warning("查無籌碼資料 (可能是 ETF 或資料源更新延遲)")
+                st.warning("暫無籌碼資料 (請確認 FinMind API 狀態)")
 
-        # === TAB 3: 券商分點/主力 (替代方案) ===
         with tab3:
-            st.subheader("券商分點主力進出追蹤")
-            st.info("ℹ️ 說明：官方 Open API 僅提供「三大法人」數據，不公開「各別券商分點」(如：凱基台北) 的明細。以下為您整理外部專業網站連結，可直接查詢主力分點。")
-            
+            st.info("ℹ️ 說明：分點進出為大量數據，建議使用以下專業網站查詢。")
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown(f"#### 🔗 [Yahoo 股市 - 主力進出](https://tw.stock.yahoo.com/quote/{clean_code}/broker-trading)")
-                st.caption("適合查詢當日買賣超前幾名的券商")
             with col2:
                 st.markdown(f"#### 🔗 [旺得富 - 分點籌碼](https://wantgoo.com/stock/{clean_code}/major-investors)")
-                st.caption("圖表化顯示主力大戶的持股變化")
-            
-            st.markdown("---")
-            st.markdown("### 📊 模擬主力動向 (法人合計)")
-            # 畫一個「三大法人合計」的圖來模擬主力
-            if chip_df is not None:
-                pivot_df = chip_df.pivot_table(index='date', columns='name', values='net_buy', aggfunc='sum').fillna(0)
-                pivot_df['合計'] = pivot_df.sum(axis=1)
-                pivot_df['累計合計'] = pivot_df['合計'].cumsum()
-                
-                fig_total = go.Figure()
-                fig_total.add_trace(go.Scatter(x=pivot_df.index, y=pivot_df['累計合計'], 
-                                             fill='tozeroy', mode='lines', name='法人合計買賣超', line=dict(color='#B10DC9')))
-                fig_total.update_layout(title="法人(疑似主力) 累計買賣超動向", template="plotly_dark")
-                st.plotly_chart(fig_total, use_container_width=True)
 
     else:
-        st.error(f"找不到代號 {ticker_input}，請確認輸入是否正確。")
+        st.error(f"找不到代號 {ticker_input}")
