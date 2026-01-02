@@ -66,7 +66,7 @@ def load_price_data(ticker, start, end):
             continue
     return None, None, clean_ticker
 
-# 抓取籌碼 (FinMind)
+# 抓取籌碼 (FinMind 通用修復版)
 def load_chip_data(stock_id, start, end):
     try:
         # FinMind 需要字串格式的日期 YYYY-MM-DD
@@ -74,9 +74,10 @@ def load_chip_data(stock_id, start, end):
         end_str = end.strftime("%Y-%m-%d")
         
         dl = DataLoader()
-        # 抓取三大法人買賣超 (TaiwanStockInstitutionalInvestor)
-        df = dl.taiwan_stock_institutional_investor(
-            stock_id=stock_id,
+        # --- 修改重點：改用 get_data 通用函數，避免版本錯誤 ---
+        df = dl.get_data(
+            dataset="TaiwanStockInstitutionalInvestor",
+            data_id=stock_id,
             start_date=start_str,
             end_date=end_str
         )
@@ -106,7 +107,7 @@ def load_chip_data(stock_id, start, end):
     except Exception as e:
         st.error(f"籌碼資料抓取失敗: {e}")
         return None
-
+        
 def get_ai_analysis(ticker_code, stock_name, chip_df=None):
     if not ai_available:
         return "AI 功能未啟用。"
